@@ -7,7 +7,6 @@
 package httptest
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"flag"
 	"fmt"
@@ -18,8 +17,10 @@ import (
 	"sync"
 	"time"
 
-	http "github.com/zMrKrabz/fhttp"
-	"github.com/zMrKrabz/fhttp/internal"
+	tls "github.com/h3adex/utls"
+
+	http "github.com/h3adex/fhttp"
+	"github.com/h3adex/fhttp/internal"
 )
 
 // A Server is an HTTP server listening on a system-chosen port on the

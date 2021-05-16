@@ -10,7 +10,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +28,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	tls "github.com/h3adex/utls"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -231,13 +232,13 @@ type CloseNotifier interface {
 }
 
 var (
-	// ServerContextKey is a context key. It can be used in HTTP
+	// ServerContextKey is a context Key. It can be used in HTTP
 	// handlers with Context.Value to access the server that
 	// started the handler. The associated value will be of
 	// type *Server.
 	ServerContextKey = &contextKey{"http-server"}
 
-	// LocalAddrContextKey is a context key. It can be used in
+	// LocalAddrContextKey is a context Key. It can be used in
 	// HTTP handlers with Context.Value to access the local
 	// address the connection arrived on.
 	// The associated value will be of type net.Addr.
@@ -490,7 +491,7 @@ type response struct {
 // TrailerPrefix is a magic prefix for ResponseWriter.Header map keys
 // that, if present, signals that the map entry is actually for
 // the response trailers, and not the response headers. The prefix
-// is stripped after the ServeHTTP call finishes and the values are
+// is stripped after the ServeHTTP call finishes and the Values are
 // sent in the trailers.
 //
 // This mechanism is intended only for trailers that are not known
@@ -1838,7 +1839,7 @@ func (c *conn) serve(ctx context.Context) {
 		}
 	}()
 
-	if tlsConn, ok := c.rwc.(*tls.Conn); ok {
+	if tlsConn, ok := c.rwc.(*tls.UConn); ok {
 		if d := c.server.ReadTimeout; d != 0 {
 			c.rwc.SetReadDeadline(time.Now().Add(d))
 		}
@@ -2543,7 +2544,7 @@ func Serve(l net.Listener, handler Handler) error {
 //
 // The handler is typically nil, in which case the DefaultServeMux is used.
 //
-// Additionally, files containing a certificate and matching private key
+// Additionally, files containing a certificate and matching private Key
 // for the server must be provided. If the certificate is signed by a
 // certificate authority, the certFile should be the concatenation
 // of the server's certificate, any intermediates, and the CA's certificate.
@@ -2605,21 +2606,21 @@ type Server struct {
 
 	// MaxHeaderBytes controls the maximum number of bytes the
 	// server will read parsing the request header's keys and
-	// values, including the request line. It does not limit the
+	// Values, including the request line. It does not limit the
 	// size of the request body.
 	// If zero, DefaultMaxHeaderBytes is used.
 	MaxHeaderBytes int
 
 	// TLSNextProto optionally specifies a function to take over
 	// ownership of the provided TLS connection when an ALPN
-	// protocol upgrade has occurred. The map key is the protocol
+	// protocol upgrade has occurred. The map Key is the protocol
 	// name negotiated. The Handler argument should be used to
 	// handle HTTP requests and will initialize the Request's TLS
 	// and RemoteAddr if not already set. The connection is
 	// automatically closed when the function returns.
 	// If TLSNextProto is not nil, HTTP/2 support is not enabled
 	// automatically.
-	TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
+	TLSNextProto map[string]func(*Server, *tls.UConn, Handler)
 
 	// ConnState specifies an optional callback function that is
 	// called when a client connection changes state. See the
@@ -3026,7 +3027,7 @@ func (srv *Server) Serve(l net.Listener) error {
 // new service goroutine for each. The service goroutines perform TLS
 // setup and then read requests, calling srv.Handler to reply to them.
 //
-// Files containing a certificate and matching private key for the
+// Files containing a certificate and matching private Key for the
 // server must be provided if neither the Server's
 // TLSConfig.Certificates nor TLSConfig.GetCertificate are populated.
 // If the certificate is signed by a certificate authority, the
@@ -3174,7 +3175,7 @@ func ListenAndServe(addr string, handler Handler) error {
 
 // ListenAndServeTLS acts identically to ListenAndServe, except that it
 // expects HTTPS connections. Additionally, files containing a certificate and
-// matching private key for the server must be provided. If the certificate
+// matching private Key for the server must be provided. If the certificate
 // is signed by a certificate authority, the certFile should be the concatenation
 // of the server's certificate, any intermediates, and the CA's certificate.
 func ListenAndServeTLS(addr, certFile, keyFile string, handler Handler) error {
@@ -3186,7 +3187,7 @@ func ListenAndServeTLS(addr, certFile, keyFile string, handler Handler) error {
 // then calls ServeTLS to handle requests on incoming TLS connections.
 // Accepted connections are configured to enable TCP keep-alives.
 //
-// Filenames containing a certificate and matching private key for the
+// Filenames containing a certificate and matching private Key for the
 // server must be provided if neither the Server's TLSConfig.Certificates
 // nor TLSConfig.GetCertificate are populated. If the certificate is
 // signed by a certificate authority, the certFile should be the
@@ -3443,7 +3444,7 @@ func (globalOptionsHandler) ServeHTTP(w ResponseWriter, r *Request) {
 // Requests come from ALPN protocol handlers.
 type initALPNRequest struct {
 	ctx context.Context
-	c   *tls.Conn
+	c   *tls.UConn
 	h   serverHandler
 }
 
@@ -3534,7 +3535,6 @@ func numLeadingCRorLF(v []byte) (n int) {
 		break
 	}
 	return
-
 }
 
 func strSliceContains(ss []string, s string) bool {

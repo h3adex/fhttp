@@ -8,14 +8,17 @@ package http
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"strings"
 	"testing"
 
-	"github.com/zMrKrabz/fhttp/internal"
+	tls "github.com/h3adex/utls"
+
+	"github.com/h3adex/fhttp/internal"
 )
 
 // Issue 15446: incorrect wrapping of errors when server closes an idle connection.
@@ -223,8 +226,8 @@ func TestTransportBodyAltRewind(t *testing.T) {
 	roundTripped := false
 	tr := &Transport{
 		DisableKeepAlives: true,
-		TLSNextProto: map[string]func(string, *tls.Conn) RoundTripper{
-			"foo": func(authority string, c *tls.Conn) RoundTripper {
+		TLSNextProto: map[string]func(string, *tls.UConn) RoundTripper{
+			"foo": func(authority string, c *tls.UConn) RoundTripper {
 				return roundTripFunc(func(r *Request) (*Response, error) {
 					n, _ := io.Copy(io.Discard, r.Body)
 					if n == 0 {
@@ -259,5 +262,22 @@ func TestTransportBodyAltRewind(t *testing.T) {
 	_, err = c.Do(req)
 	if err != nil {
 		t.Error(err)
+	}
+}
+
+// Tests that gzipReader doesn't crash on a second Read call following
+// the first Read call's gzip.NewReader returning an error.
+func TestGzipReader_DoubleReadCrash(t *testing.T) {
+	gz := &gzipReader{
+		body: ioutil.NopCloser(strings.NewReader("0123456789")),
+	}
+	var buf [1]byte
+	n, err1 := gz.Read(buf[:])
+	if n != 0 || !strings.Contains(fmt.Sprint(err1), "invalid header") {
+		t.Fatalf("Read = %v, %v; want 0, invalid header", n, err1)
+	}
+	n, err2 := gz.Read(buf[:])
+	if n != 0 || err2 != err1 {
+		t.Fatalf("second Read = %v, %v; want 0, %v", n, err2, err1)
 	}
 }

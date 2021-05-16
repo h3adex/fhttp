@@ -11,10 +11,12 @@ package http
 
 import (
 	"bufio"
+	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"container/list"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +31,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zMrKrabz/fhttp/httptrace"
+	"github.com/andybalholm/brotli"
+	tls "github.com/h3adex/utls"
+
+	"github.com/h3adex/fhttp/httptrace"
 
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http/httpproxy"
@@ -89,7 +94,7 @@ const DefaultMaxIdleConnsPerHost = 2
 // Request.GetBody defined. HTTP requests are considered idempotent if
 // they have HTTP methods GET, HEAD, OPTIONS, or TRACE; or if their
 // Header map contains an "Idempotency-Key" or "X-Idempotency-Key"
-// entry. If the idempotency key value is a zero-length slice, the
+// entry. If the idempotency Key value is a zero-length slice, the
 // request is treated as idempotent but the header is not sent on the
 // wire.
 type Transport struct {
@@ -103,7 +108,7 @@ type Transport struct {
 	reqCanceler map[cancelKey]func(error)
 
 	altMu    sync.Mutex   // guards changing altProto only
-	altProto atomic.Value // of nil or map[string]RoundTripper, key is URI scheme
+	altProto atomic.Value // of nil or map[string]RoundTripper, Key is URI scheme
 
 	connsPerHostMu   sync.Mutex
 	connsPerHost     map[connectMethodKey]int
@@ -163,10 +168,15 @@ type Transport struct {
 	DialTLS func(network, addr string) (net.Conn, error)
 
 	// TLSClientConfig specifies the TLS configuration to use with
-	// tls.Client.
+	// tls.UClient.
 	// If nil, the default configuration is used.
 	// If non-nil, HTTP/2 support may not be enabled by default.
 	TLSClientConfig *tls.Config
+
+	// GetTlsClientHelloSpec returns the TLS spec to use with
+	// tls.UClient.
+	// If nil, the default configuration is used.
+	GetTlsClientHelloSpec func() *tls.ClientHelloSpec
 
 	// TLSHandshakeTimeout specifies the maximum amount of time waiting to
 	// wait for a TLS handshake. Zero means no timeout.
@@ -230,13 +240,13 @@ type Transport struct {
 	// alternate protocol (such as HTTP/2) after a TLS ALPN
 	// protocol negotiation. If Transport dials an TLS connection
 	// with a non-empty protocol name and TLSNextProto contains a
-	// map entry for that key (such as "h2"), then the func is
+	// map entry for that Key (such as "h2"), then the func is
 	// called with the request's authority (such as "example.com"
 	// or "example.com:1234") and the TLS connection. The function
 	// must return a RoundTripper that then handles the request.
 	// If TLSNextProto is not nil, HTTP/2 support is not enabled
 	// automatically.
-	TLSNextProto map[string]func(authority string, c *tls.Conn) RoundTripper
+	TLSNextProto map[string]func(authority string, c *tls.UConn) RoundTripper
 
 	// ProxyConnectHeader optionally specifies headers to send to
 	// proxies during CONNECT requests.
@@ -272,7 +282,7 @@ type Transport struct {
 	// nextProtoOnce guards initialization of TLSNextProto and
 	// h2transport (via onceSetNextProtoDefaults)
 	nextProtoOnce      sync.Once
-	h2transport        h2Transport // non-nil if http2 wired up
+	H2transport        h2Transport // non-nil if http2 wired up
 	tlsNextProtoWasNil bool        // whether TLSNextProto was nil when the Once fired
 
 	// ForceAttemptHTTP2 controls whether HTTP/2 is enabled when a non-zero
@@ -283,7 +293,7 @@ type Transport struct {
 	ForceAttemptHTTP2 bool
 }
 
-// A cancelKey is the key of the reqCanceler map.
+// A cancelKey is the Key of the reqCanceler map.
 // We wrap the *Request in this type since we want to use the original request,
 // not any transient one created by roundTrip.
 type cancelKey struct {
@@ -333,7 +343,7 @@ func (t *Transport) Clone() *Transport {
 		t2.TLSClientConfig = t.TLSClientConfig.Clone()
 	}
 	if !t.tlsNextProtoWasNil {
-		npm := map[string]func(authority string, c *tls.Conn) RoundTripper{}
+		npm := map[string]func(authority string, c *tls.UConn) RoundTripper{}
 		for k, v := range t.TLSNextProto {
 			npm[k] = v
 		}
@@ -373,7 +383,7 @@ func (t *Transport) onceSetNextProtoDefaults() {
 	if rv := reflect.ValueOf(altProto["https"]); rv.IsValid() && rv.Type().Kind() == reflect.Struct && rv.Type().NumField() == 1 {
 		if v := rv.Field(0); v.CanInterface() {
 			if h2i, ok := v.Interface().(h2Transport); ok {
-				t.h2transport = h2i
+				t.H2transport = h2i
 				return
 			}
 		}
@@ -396,26 +406,14 @@ func (t *Transport) onceSetNextProtoDefaults() {
 	if omitBundledHTTP2 {
 		return
 	}
-	t2, err := http2configureTransports(t)
-	if err != nil {
-		log.Printf("Error enabling Transport HTTP/2 support: %v", err)
-		return
-	}
-	t.h2transport = t2
 
-	// Auto-configure the http2.Transport's MaxHeaderListSize from
-	// the http.Transport's MaxResponseHeaderBytes. They don't
-	// exactly mean the same thing, but they're close.
-	//
-	// TODO: also add this to x/net/http2.Configure Transport, behind
-	// a +build go1.7 build tag:
-	if limit1 := t.MaxResponseHeaderBytes; limit1 != 0 && t2.MaxHeaderListSize == 0 {
-		const h2max = 1<<32 - 1
-		if limit1 >= h2max {
-			t2.MaxHeaderListSize = h2max
-		} else {
-			t2.MaxHeaderListSize = uint32(limit1)
+	if t.H2transport == nil {
+		t2, err := http2configureTransports(t)
+		if err != nil {
+			log.Printf("error enabling Transport HTTP/2 support: %v", err)
+			return
 		}
+		t.H2transport = t2
 	}
 }
 
@@ -425,7 +423,7 @@ func (t *Transport) onceSetNextProtoDefaults() {
 // thereof). HTTPS_PROXY takes precedence over HTTP_PROXY for https
 // requests.
 //
-// The environment values may be either a complete URL or a
+// The environment Values may be either a complete URL or a
 // "host[:port]", in which case the "http" scheme is assumed.
 // An error is returned if the value is a different form.
 //
@@ -518,19 +516,17 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	if isHTTP {
 		for k, vv := range req.Header {
 			if !httpguts.ValidHeaderFieldName(k) {
-
-				// Allow the HeaderOrderKey magic string, this will be handled further.
-				if k == HeaderOrderKey {
+				// Allow the HeaderOrderKey and PHeaderOrderKey magic string, this will be handled further.
+				if k == HeaderOrderKey || k == PHeaderOrderKey {
 					continue
 				}
-
 				req.closeBody()
 				return nil, fmt.Errorf("net/http: invalid header field name %q", k)
 			}
 			for _, v := range vv {
 				if !httpguts.ValidHeaderFieldValue(v) {
 					req.closeBody()
-					return nil, fmt.Errorf("net/http: invalid header field value %q for key %v", v, k)
+					return nil, fmt.Errorf("net/http: invalid header field value %q for Key %v", v, k)
 				}
 			}
 		}
@@ -573,6 +569,8 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 		// treq gets modified by roundTrip, so we need to recreate for each retry.
 		treq := &transportRequest{Request: req, trace: trace, cancelKey: cancelKey}
+
+		// Creates CONNECT method, is method to add proxy connection to req
 		cm, err := t.connectMethodForRequest(treq)
 		if err != nil {
 			req.closeBody()
@@ -775,7 +773,7 @@ func (t *Transport) CloseIdleConnections() {
 			pconn.close(errCloseIdleConns)
 		}
 	}
-	if t2 := t.h2transport; t2 != nil {
+	if t2 := t.H2transport; t2 != nil {
 		t2.CloseIdleConnections()
 	}
 }
@@ -854,7 +852,7 @@ func (cm *connectMethod) proxyAuth() string {
 	return ""
 }
 
-// error values for debugging and testing, not seen by users.
+// error Values for debugging and testing, not seen by users.
 var (
 	errKeepAlivesDisabled = errors.New("http: putIdleConn: keep alives disabled")
 	errConnBroken         = errors.New("http: putIdleConn: connection is in bad state")
@@ -1186,7 +1184,7 @@ func (t *Transport) dial(ctx context.Context, network, addr string) (net.Conn, e
 // wantConn to coordinate and agree about the winning outcome.
 type wantConn struct {
 	cm    connectMethod
-	key   connectMethodKey // cm.key()
+	key   connectMethodKey // cm.Key()
 	ctx   context.Context  // context for dial
 	ready chan struct{}    // closed when pc, err pair is delivered
 
@@ -1441,8 +1439,8 @@ func (t *Transport) queueForDial(w *wantConn) {
 }
 
 // dialConnFor dials on behalf of w and delivers the result to w.
-// dialConnFor has received permission to dial w.cm and is counted in t.connCount[w.cm.key()].
-// If the dial is cancelled or unsuccessful, dialConnFor decrements t.connCount[w.cm.key()].
+// dialConnFor has received permission to dial w.cm and is counted in t.connCount[w.cm.Key()].
+// If the dial is cancelled or unsuccessful, dialConnFor decrements t.connCount[w.cm.Key()].
 func (t *Transport) dialConnFor(w *wantConn) {
 	defer w.afterDial()
 
@@ -1459,7 +1457,7 @@ func (t *Transport) dialConnFor(w *wantConn) {
 	}
 }
 
-// decConnsPerHost decrements the per-host connection count for key,
+// decConnsPerHost decrements the per-host connection count for Key,
 // which may in turn give a different waiting goroutine permission to dial.
 func (t *Transport) decConnsPerHost(key connectMethodKey) {
 	if t.MaxConnsPerHost <= 0 {
@@ -1522,7 +1520,17 @@ func (pconn *persistConn) addTLS(name string, trace *httptrace.ClientTrace) erro
 		cfg.NextProtos = nil
 	}
 	plainConn := pconn.conn
-	tlsConn := tls.Client(plainConn, cfg)
+	var tlsConn *tls.UConn
+
+	if pconn.t.GetTlsClientHelloSpec != nil {
+		tlsConn = tls.UClient(plainConn, cfg, tls.HelloCustom)
+		if err := tlsConn.ApplyPreset(pconn.t.GetTlsClientHelloSpec()); err != nil {
+			return err
+		}
+	} else {
+		tlsConn = tls.UClient(plainConn, cfg, tls.HelloGolang)
+	}
+
 	errc := make(chan error, 2)
 	var timer *time.Timer // for canceling TLS handshake
 	if d := pconn.t.TLSHandshakeTimeout; d != 0 {
@@ -1584,7 +1592,7 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (pconn *pers
 		if err != nil {
 			return nil, wrapErr(err)
 		}
-		if tc, ok := pconn.conn.(*tls.Conn); ok {
+		if tc, ok := pconn.conn.(*tls.UConn); ok {
 			// Handshake here, in case DialTLS didn't. TLSNextProto below
 			// depends on it for knowing the connection state.
 			if trace != nil && trace.TLSHandshakeStart != nil {
@@ -1735,7 +1743,7 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (pconn *pers
 
 	if s := pconn.tlsState; s != nil && s.NegotiatedProtocolIsMutual && s.NegotiatedProtocol != "" {
 		if next, ok := t.TLSNextProto[s.NegotiatedProtocol]; ok {
-			alt := next(cm.targetAddr, pconn.conn.(*tls.Conn))
+			alt := next(cm.targetAddr, pconn.conn.(*tls.UConn))
 			if e, ok := alt.(erringRoundTripper); ok {
 				// pconn.conn was closed by next (http2configureTransports.upgradeFn).
 				return nil, e.RoundTripErr()
@@ -1802,7 +1810,7 @@ type connectMethod struct {
 	targetScheme string   // "http" or "https"
 	// If proxyURL specifies an http or https proxy, and targetScheme is http (not https),
 	// then targetAddr is not included in the connect method key, because the socket can
-	// be reused for different targetAddr values.
+	// be reused for different targetAddr Values.
 	targetAddr string
 	onlyH1     bool // whether to disable HTTP/2 and force HTTP/1
 }
@@ -1850,7 +1858,7 @@ func (cm *connectMethod) tlsHost() string {
 	return h
 }
 
-// connectMethodKey is the map key version of connectMethod, with a
+// connectMethodKey is the map Key version of connectMethod, with a
 // stringified proxy URL (or the empty string) instead of a pointer to
 // a URL.
 type connectMethodKey struct {
@@ -2190,8 +2198,8 @@ func (pc *persistConn) readLoop() {
 		}
 
 		resp.Body = body
-		if rc.addedGzip && strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-			resp.Body = &gzipReader{body: body}
+		if rc.addedGzip {
+			resp.Body = DecompressBody(resp)
 			resp.Header.Del("Content-Encoding")
 			resp.Header.Del("Content-Length")
 			resp.ContentLength = -1
@@ -2230,6 +2238,161 @@ func (pc *persistConn) readLoop() {
 
 		testHookReadLoopBeforeNextRead()
 	}
+}
+
+func DecompressBody(res *Response) io.ReadCloser {
+	ce := res.Header.Get("Content-Encoding")
+	res.ContentLength = -1
+	res.Uncompressed = true
+
+	switch ce {
+	case "gzip":
+		return &gzipReader{
+			body: res.Body,
+		}
+	case "br":
+		return &brReader{
+			body: res.Body,
+		}
+	case "deflate":
+		return identifyDeflate(res.Body)
+	default:
+		return res.Body
+	}
+}
+
+// gzipReader wraps a response body so it can lazily
+// call gzip.NewReader on the first call to Read
+type gzipReader struct {
+	_    incomparable
+	body io.ReadCloser // underlying Response.Body
+	zr   *gzip.Reader  // lazily-initialized gzip reader
+	zerr error         // sticky error
+}
+
+func (gz *gzipReader) Read(p []byte) (n int, err error) {
+	if gz.zerr != nil {
+		return 0, gz.zerr
+	}
+	if gz.zr == nil {
+		gz.zr, err = gzip.NewReader(gz.body)
+		if err != nil {
+			gz.zerr = err
+			return 0, err
+		}
+	}
+	return gz.zr.Read(p)
+}
+
+func (gz *gzipReader) Close() error {
+	return gz.body.Close()
+}
+
+// brReader lazily wraps a response body into an
+// io.ReadCloser, will call gzip.NewReader on first
+// call to read
+type brReader struct {
+	_    incomparable
+	body io.ReadCloser
+	zr   *brotli.Reader
+	zerr error
+}
+
+func (br *brReader) Read(p []byte) (n int, err error) {
+	if br.zerr != nil {
+		return 0, br.zerr
+	}
+	if br.zr == nil {
+		br.zr = brotli.NewReader(br.body)
+	}
+	return br.zr.Read(p)
+}
+
+func (br *brReader) Close() error {
+	return br.body.Close()
+}
+
+type zlibDeflateReader struct {
+	_    incomparable
+	body io.ReadCloser
+	zr   io.ReadCloser
+	err  error
+}
+
+func (z *zlibDeflateReader) Read(p []byte) (n int, err error) {
+	if z.err != nil {
+		return 0, z.err
+	}
+	if z.zr == nil {
+		z.zr, err = zlib.NewReader(z.body)
+		if err != nil {
+			z.err = err
+			return 0, z.err
+		}
+	}
+	return z.zr.Read(p)
+}
+
+func (z *zlibDeflateReader) Close() error {
+	return z.zr.Close()
+}
+
+type deflateReader struct {
+	_    incomparable
+	body io.ReadCloser
+	r    io.ReadCloser
+	err  error
+}
+
+func (dr *deflateReader) Read(p []byte) (n int, err error) {
+	if dr.err != nil {
+		return 0, dr.err
+	}
+	if dr.r == nil {
+		dr.r = flate.NewReader(dr.body)
+	}
+	return dr.r.Read(p)
+}
+
+func (dr *deflateReader) Close() error {
+	return dr.r.Close()
+}
+
+const (
+	zlibMethodDeflate = 0x78
+	zlibLevelDefault  = 0x9C
+	zlibLevelLow      = 0x01
+	zlibLevelMedium   = 0x5E
+	zlibLevelBest     = 0xDA
+)
+
+func identifyDeflate(body io.ReadCloser) io.ReadCloser {
+	var header [2]byte
+	_, err := io.ReadFull(body, header[:])
+	if err != nil {
+		return body
+	}
+
+	if header[0] == zlibMethodDeflate &&
+		(header[1] == zlibLevelDefault || header[1] == zlibLevelLow || header[1] == zlibLevelMedium || header[1] == zlibLevelBest) {
+		return &zlibDeflateReader{
+			body: prependBytesToReadCloser(header[:], body),
+		}
+	} else if header[0] == zlibMethodDeflate {
+		return &deflateReader{
+			body: prependBytesToReadCloser(header[:], body),
+		}
+	}
+	return body
+}
+
+func prependBytesToReadCloser(b []byte, r io.ReadCloser) io.ReadCloser {
+	w := new(bytes.Buffer)
+	w.Write(b)
+	io.Copy(w, r)
+	defer r.Close()
+
+	return io.NopCloser(w)
 }
 
 func (pc *persistConn) readLoopPeekFailLocked(peekErr error) {
@@ -2550,11 +2713,11 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 	requestedGzip := false
 	if !pc.t.DisableCompression &&
 		req.Header.Get("Accept-Encoding") == "" &&
+		req.Header.get("accept-encoding") == "" &&
 		req.Header.Get("Range") == "" &&
 		req.Method != "HEAD" {
-		// Request gzip only, not deflate. Deflate is ambiguous and
-		// not as universally supported anyway.
-		// See: https://zlib.net/zlib_faq.html#faq39
+		// Request gzip, deflate, br if Accept-Encoding is
+		// not specified
 		//
 		// Note that we don't request this for HEAD requests,
 		// due to a bug in nginx:
@@ -2565,7 +2728,9 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 		// auto-decoding a portion of a gzipped document will just fail
 		// anyway. See https://golang.org/issue/8923
 		requestedGzip = true
-		req.extraHeaders().Set("Accept-Encoding", "gzip")
+		req.extraHeaders().Set("Accept-Encoding", "gzip, deflate, br")
+	} else if !pc.t.DisableCompression && strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
+		requestedGzip = true
 	}
 
 	var continueCh chan struct{}
@@ -2667,7 +2832,7 @@ func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err err
 	}
 }
 
-// tLogKey is a context WithValue key for test debugging contexts containing
+// tLogKey is a context WithValue Key for test debugging contexts containing
 // a t.Logf func. See export_test.go's Request.WithT method.
 type tLogKey struct{}
 
@@ -2802,41 +2967,6 @@ func (es *bodyEOFSignal) condfn(err error) error {
 	err = es.fn(err)
 	es.fn = nil
 	return err
-}
-
-// gzipReader wraps a response body so it can lazily
-// call gzip.NewReader on the first call to Read
-type gzipReader struct {
-	_    incomparable
-	body *bodyEOFSignal // underlying HTTP/1 response body framing
-	zr   *gzip.Reader   // lazily-initialized gzip reader
-	zerr error          // any error from gzip.NewReader; sticky
-}
-
-func (gz *gzipReader) Read(p []byte) (n int, err error) {
-	if gz.zr == nil {
-		if gz.zerr == nil {
-			gz.zr, gz.zerr = gzip.NewReader(gz.body)
-		}
-		if gz.zerr != nil {
-			return 0, gz.zerr
-		}
-	}
-
-	gz.body.mu.Lock()
-	if gz.body.closed {
-		err = errReadOnClosedResBody
-	}
-	gz.body.mu.Unlock()
-
-	if err != nil {
-		return 0, err
-	}
-	return gz.zr.Read(p)
-}
-
-func (gz *gzipReader) Close() error {
-	return gz.body.Close()
 }
 
 type tlsHandshakeTimeoutError struct{}

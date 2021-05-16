@@ -1,25 +1,92 @@
-# fhttp 
-The f stands for flex. fhttp is a fork of net/http that provides an array of features pertaining to the fingerprint of the golang http client. Through these changes, the http client becomes much more flexible, and when combined with transports such as [uTLS](https://github.com/refraction-networking/utls) can mitigate servers from fingerprinting requests and see that it is made by golang. It will look like it's from a regular chrome browser.
-
-Documentation can be contributed, otherwise, look at tests and examples. Main one should be [example_client_test.go](example_client_test.go)
+# fhttp
 
 # Features
+
 ## Ordered Headers
-Allows for pseduo header order and normal header order. Most of the code is taken from [this pr](https://go-review.googlesource.com/c/go/+/105755/).
 
-## Connection settings (TODO)
-Has Chrome like connection settings:
-```
-SETTINGS_HEADER_TABLE_SIZE
-```
-(will add rest later, notion broken on computer)
+The package allows for both pseudo header order and normal header order. Most of the code is from this [this Pull Request](https://go-review.googlesource.com/c/go/+/105755/).
 
-## Backwards compatible with net/http
-Although this library is an extension of `net/http`, it is also meant to be backwards compatible. Replacing
+**Note on HTTP/1.1 header order**
+Although the header key is capitalized, the header order slice must be in lowercase.
+```go
+	req.Header = http.Header{
+		"X-NewRelic-ID":         {"12345"},
+		"x-api-key":             {"ABCDE12345"},
+		"MESH-Commerce-Channel": {"android-app-phone"},
+		"mesh-version":          {"cart=4"},
+		"X-Request-Auth":        {"hawkHeader"},
+		"X-acf-sensor-data":     {"3456"},
+		"Content-Type":          {"application/json; charset=UTF-8"},
+		"Accept":                {"application/json"},
+		"Transfer-Encoding":     {"chunked"},
+		"Host":                  {"example.com"},
+		"Connection":            {"Keep-Alive"},
+		"Accept-Encoding":       {"gzip"},
+		HeaderOrderKey: {
+			"x-newrelic-id",
+			"x-api-key",
+			"mesh-commerce-channel",
+			"mesh-version",
+			"user-agent",
+			"x-request-auth",
+			"x-acf-sensor-data",
+			"transfer-encoding",
+			"content-type",
+			"accept",
+			"host",
+			"connection",
+			"accept-encoding",
+		},
+		PHeaderOrderKey: {
+			":method",
+			":path",
+			":authority",
+			":scheme",
+		},
+	}
+```
+
+## Connection settings
+
+fhhtp has Chrome-like connection settings, as shown below:
+
+```text
+SETTINGS_HEADER_TABLE_SIZE = 65536 (2^16)
+SETTINGS_ENABLE_PUSH = 1
+SETTINGS_MAX_CONCURRENT_STREAMS = 1000
+SETTINGS_INITIAL_WINDOW_SIZE = 6291456
+SETTINGS_MAX_FRAME_SIZE = 16384 (2^14)
+SETTINGS_MAX_HEADER_LIST_SIZE = 262144 (2^18)
+```
+
+The default net/http settings, on the other hand, are the following:
+
+```text
+SETTINGS_HEADER_TABLE_SIZE = 4096
+SETTINGS_ENABLE_PUSH = 0
+SETTINGS_MAX_CONCURRENT_STREAMS = unlimited
+SETTINGS_INITIAL_WINDOW_SIZE = 4194304
+SETTINGS_MAX_FRAME_SIZE = 16384
+SETTINGS_MAX_HEADER_LIST_SIZE = 10485760
+```
+
+The ENABLE_PUSH implementation was merged from [this Pull Request](https://go-review.googlesource.com/c/net/+/181497/).
+
+## gzip, deflate, and br encoding
+
+`gzip`, `deflate`, and `br` encoding are all supported by the package.
+
+## Pseudo header order
+
+fhttp supports pseudo header order for http2, helping mitigate fingerprinting. You can read more about how it works [here](https://www.akamai.com/uk/en/multimedia/documents/white-paper/passive-fingerprinting-of-http2-clients-white-paper.pdf).
+
+## Backward compatible with net/http
+
+Although this library is an extension of `net/http`, it is also meant to be backward compatible. Replacing
 
 ```go
 import (
-	"net/http"
+   "net/http"
 )
 ```
 
@@ -27,8 +94,36 @@ with
 
 ```go
 import (
-	http "github.com/zMrKrabz/fhttp"
+    http "github.com/h3adex/fhttp"
 )
 ```
 
-SHOULD not break anything. 
+SHOULD not break anything.
+
+## Versatile Content-Length and Transfer-Encoding headers
+
+fhttp user to set custom Content-Length and Transfer-Encoding headers of all types.
+
+### To set an empty Content-Length header
+```go
+req.Header = http.Header{
+	"Content-Length": {http.ContentLengthEmpty},
+}
+```
+
+### To ignore setting the Content-Length header
+```go
+req.Header = http.Header{
+    "Content-Length": {http.ContentLengthDelete},
+}
+```
+
+Any Content-Length or Transfer-Encoding headers set will be prioritized and fhttp will not set proper Content-length or Transfer-Encoding headers
+
+## Credits
+
+Special thanks to the following people for helping me with this project.
+
+* [cc](https://github.com/x04/) for guiding me when I first started this project and inspiring me with [cclient](https://github.com/x04/cclient)
+
+* [umasi](https://github.com/umasii) for being good rubber ducky and giving me tips for http2 headers

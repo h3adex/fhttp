@@ -9,7 +9,6 @@ package http
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	tls "github.com/h3adex/utls"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -39,12 +40,12 @@ type Response struct {
 	ProtoMajor int    // e.g. 1
 	ProtoMinor int    // e.g. 0
 
-	// Header maps header keys to values. If the response had multiple
-	// headers with the same key, they may be concatenated, with comma
+	// Header maps header keys to Values. If the response had multiple
+	// headers with the same Key, they may be concatenated, with comma
 	// delimiters.  (RFC 7230, section 3.2.2 requires that multiple headers
 	// be semantically equivalent to a comma-delimited sequence.) When
-	// Header values are duplicated by other fields in this struct (e.g.,
-	// ContentLength, TransferEncoding, Trailer), the field values are
+	// Header Values are duplicated by other fields in this struct (e.g.,
+	// ContentLength, TransferEncoding, Trailer), the field Values are
 	// authoritative.
 	//
 	// Keys in the map are canonicalized (see CanonicalHeaderKey).
@@ -73,7 +74,7 @@ type Response struct {
 
 	// ContentLength records the length of the associated content. The
 	// value -1 indicates that the length is unknown. Unless Request.Method
-	// is "HEAD", values >= 0 indicate that the given number of bytes may
+	// is "HEAD", Values >= 0 indicate that the given number of bytes may
 	// be read from Body.
 	ContentLength int64
 
@@ -95,18 +96,18 @@ type Response struct {
 	// the server, set Transport.DisableCompression to true.
 	Uncompressed bool
 
-	// Trailer maps trailer keys to values in the same
+	// Trailer maps trailer keys to Values in the same
 	// format as Header.
 	//
-	// The Trailer initially contains only nil values, one for
-	// each key specified in the server's "Trailer" header
-	// value. Those values are not added to Header.
+	// The Trailer initially contains only nil Values, one for
+	// each Key specified in the server's "Trailer" header
+	// value. Those Values are not added to Header.
 	//
 	// Trailer must not be accessed concurrently with Read calls
 	// on the Body.
 	//
 	// After Body.Read has returned io.EOF, Trailer will contain
-	// any trailer values sent by the server.
+	// any trailer Values sent by the server.
 	Trailer Header
 
 	// Request is the request that was sent to obtain this Response.
@@ -123,7 +124,7 @@ type Response struct {
 
 // Cookies parses and returns the cookies set in the Set-Cookie headers.
 func (r *Response) Cookies() []*Cookie {
-	return readSetCookies(r.Header)
+	return ReadSetCookies(r.Header)
 }
 
 // ErrNoLocation is returned by Response's Location method
@@ -149,7 +150,7 @@ func (r *Response) Location() (*url.URL, error) {
 // The req parameter optionally specifies the Request that corresponds
 // to this Response. If nil, a GET request is assumed.
 // Clients must call resp.Body.Close when finished reading resp.Body.
-// After that call, clients can inspect resp.Trailer to find key/value
+// After that call, clients can inspect resp.Trailer to find Key/value
 // pairs included in the response trailer.
 func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 	tp := textproto.NewReader(r)
@@ -239,7 +240,7 @@ func (r *Response) ProtoAtLeast(major, minor int) bool {
 //  Trailer
 //  Body
 //  ContentLength
-//  Header, values for non-canonical keys will have unpredictable behavior
+//  Header, Values for non-canonical keys will have unpredictable behavior
 //
 // The Response Body is closed after it is sent.
 func (r *Response) Write(w io.Writer) error {

@@ -10,7 +10,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -25,7 +24,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zMrKrabz/fhttp/httptrace"
+	tls "github.com/h3adex/utls"
+
+	"github.com/h3adex/fhttp/httptrace"
 
 	"golang.org/x/net/idna"
 )
@@ -161,7 +162,7 @@ type Request struct {
 	//
 	// For client requests, certain headers such as Content-Length
 	// and Connection are automatically written when needed and
-	// values in Header may be ignored. See the documentation
+	// Values in Header may be ignored. See the documentation
 	// for the Request.Write method.
 	Header Header
 
@@ -260,16 +261,16 @@ type Request struct {
 	// body.
 	//
 	// For server requests, the Trailer map initially contains only the
-	// trailer keys, with nil values. (The client declares which trailers it
+	// trailer keys, with nil Values. (The client declares which trailers it
 	// will later send.)  While the handler is reading from Body, it must
 	// not reference Trailer. After reading from Body returns EOF, Trailer
-	// can be read again and will contain non-nil values, if they were sent
+	// can be read again and will contain non-nil Values, if they were sent
 	// by the client.
 	//
 	// For client requests, Trailer must be initialized to a map containing
-	// the trailer keys to later send. The values may be nil or their final
-	// values. The ContentLength must be 0 or -1, to send a chunked request.
-	// After the HTTP request is sent the map values can be updated while
+	// the trailer keys to later send. The Values may be nil or their final
+	// Values. The ContentLength must be 0 or -1, to send a chunked request.
+	// After the HTTP request is sent the map Values can be updated while
 	// the request body is read. Once the body returns EOF, the caller must
 	// not mutate Trailer.
 	//
@@ -408,7 +409,7 @@ func (r *Request) UserAgent() string {
 
 // Cookies parses and returns the HTTP cookies sent with the request.
 func (r *Request) Cookies() []*Cookie {
-	return readCookies(r.Header, "")
+	return ReadCookies(r.Header, "")
 }
 
 // ErrNoCookie is returned by Request's Cookie method when a cookie is not found.
@@ -419,7 +420,7 @@ var ErrNoCookie = errors.New("http: named cookie not present")
 // If multiple cookies match the given name, only one cookie will
 // be returned.
 func (r *Request) Cookie(name string) (*Cookie, error) {
-	for _, c := range readCookies(r.Header, name) {
+	for _, c := range ReadCookies(r.Header, name) {
 		return c, nil
 	}
 	return nil, ErrNoCookie
@@ -613,29 +614,13 @@ func (r *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, waitF
 		return err
 	}
 
-	// Header lines
-	_, err = fmt.Fprintf(w, "Host: %s\r\n", host)
-	if err != nil {
-		return err
-	}
-	if trace != nil && trace.WroteHeaderField != nil {
-		trace.WroteHeaderField("Host", []string{host})
+	if _, ok := r.Header["Host"]; !ok {
+		r.Header.Set("Host", host)
 	}
 
-	// Use the defaultUserAgent unless the Header contains one, which
-	// may be blank to not send the header.
-	userAgent := defaultUserAgent
-	if r.Header.has("User-Agent") {
-		userAgent = r.Header.Get("User-Agent")
-	}
-	if userAgent != "" {
-		_, err = fmt.Fprintf(w, "User-Agent: %s\r\n", userAgent)
-		if err != nil {
-			return err
-		}
-		if trace != nil && trace.WroteHeaderField != nil {
-			trace.WroteHeaderField("User-Agent", []string{userAgent})
-		}
+	// if user agent field is not present, add it
+	if uaCap, uaLow := r.Header["User-Agent"], r.Header["user-agent"]; uaCap == nil && uaLow == nil {
+		r.Header.Set("User-Agent", "Go-http-client/1.1")
 	}
 
 	// Process Body,ContentLength,Close,Trailer
@@ -643,12 +628,12 @@ func (r *Request) write(w io.Writer, usingProxy bool, extraHeaders Header, waitF
 	if err != nil {
 		return err
 	}
-	err = tw.writeHeader(w, trace)
+	err = tw.addHeaders(&r.Header, trace)
 	if err != nil {
 		return err
 	}
 
-	err = r.Header.writeSubset(w, reqWriteExcludeHeader, trace)
+	err = r.Header.write(w, trace)
 	if err != nil {
 		return err
 	}
@@ -1238,7 +1223,7 @@ func parsePostForm(r *Request) (vs url.Values, err error) {
 //
 // For POST, PUT, and PATCH requests, it also reads the request body, parses it
 // as a form and puts the results into both r.PostForm and r.Form. Request body
-// parameters take precedence over URL query string values in r.Form.
+// parameters take precedence over URL query string Values in r.Form.
 //
 // If the request Body's size has not already been limited by MaxBytesReader,
 // the size is capped at 10MB.
@@ -1329,11 +1314,11 @@ func (r *Request) ParseMultipartForm(maxMemory int64) error {
 }
 
 // FormValue returns the first value for the named component of the query.
-// POST and PUT body parameters take precedence over URL query string values.
+// POST and PUT body parameters take precedence over URL query string Values.
 // FormValue calls ParseMultipartForm and ParseForm if necessary and ignores
 // any errors returned by these functions.
-// If key is not present, FormValue returns the empty string.
-// To access multiple values of the same key, call ParseForm and
+// If Key is not present, FormValue returns the empty string.
+// To access multiple Values of the same Key, call ParseForm and
 // then inspect Request.Form directly.
 func (r *Request) FormValue(key string) string {
 	if r.Form == nil {
@@ -1349,7 +1334,7 @@ func (r *Request) FormValue(key string) string {
 // PATCH, or PUT request body. URL query parameters are ignored.
 // PostFormValue calls ParseMultipartForm and ParseForm if necessary and ignores
 // any errors returned by these functions.
-// If key is not present, PostFormValue returns the empty string.
+// If Key is not present, PostFormValue returns the empty string.
 func (r *Request) PostFormValue(key string) string {
 	if r.PostForm == nil {
 		r.ParseMultipartForm(defaultMaxMemory)
@@ -1360,7 +1345,7 @@ func (r *Request) PostFormValue(key string) string {
 	return ""
 }
 
-// FormFile returns the first file for the provided form key.
+// FormFile returns the first file for the provided form Key.
 // FormFile calls ParseMultipartForm and ParseForm if necessary.
 func (r *Request) FormFile(key string) (multipart.File, *multipart.FileHeader, error) {
 	if r.MultipartForm == multipartByReader {

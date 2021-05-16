@@ -7,15 +7,15 @@ package http_test
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
 
-	. "github.com/zMrKrabz/fhttp"
-	"github.com/zMrKrabz/fhttp/httptest"
+	tls "github.com/h3adex/utls"
+
+	"github.com/h3adex/fhttp/httptest"
 )
 
 func TestNextProtoUpgrade(t *testing.T) {
@@ -36,7 +36,7 @@ func TestNextProtoUpgrade(t *testing.T) {
 	ts.TLS = &tls.Config{
 		NextProtos: []string{"unhandled-proto", "tls-0.9"},
 	}
-	ts.Config.TLSNextProto = map[string]func(*Server, *tls.Conn, Handler){
+	ts.Config.TLSNextProto = map[string]func(*Server, *tls.UConn, Handler){
 		"tls-0.9": handleTLSProtocol09,
 	}
 	ts.StartTLS()
@@ -105,7 +105,7 @@ func TestNextProtoUpgrade(t *testing.T) {
 
 // handleTLSProtocol09 implements the HTTP/0.9 protocol over TLS, for the
 // TestNextProtoUpgrade test.
-func handleTLSProtocol09(srv *Server, conn *tls.Conn, h Handler) {
+func handleTLSProtocol09(srv *Server, conn *tls.UConn, h Handler) {
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
 	if err != nil {

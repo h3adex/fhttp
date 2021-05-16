@@ -9,16 +9,18 @@ package cgi
 
 import (
 	"bufio"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+
+	tls "github.com/h3adex/utls"
+
+	http "github.com/h3adex/fhttp"
 )
 
 // Request returns the HTTP request as represented in the current

@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zMrKrabz/fhttp/httptrace"
-	"github.com/zMrKrabz/fhttp/internal"
+	"github.com/h3adex/fhttp/httptrace"
+	"github.com/h3adex/fhttp/internal"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -271,6 +271,73 @@ func (t *transferWriter) shouldSendContentLength() bool {
 	return false
 }
 
+const (
+	ContentLengthEmpty  = "EMPTY_CONTENT_LENGTH"
+	ContentLengthDelete = "DELETE_CONTENT_LENGTH"
+)
+
+// addHeaders adds transfer headers to an existing header object
+func (t *transferWriter) addHeaders(hdrs *Header, trace *httptrace.ClientTrace) error {
+	if t.Close && !hasToken(t.Header.get("Connection"), "close") {
+		hdrs.Add("Connection", "close")
+		if trace != nil && trace.WroteHeaderField != nil {
+			trace.WroteHeaderField("Connection", []string{"close"})
+		}
+	}
+
+	// Write Content-Length and/or Transfer-Encoding whose Values are a
+	// function of the sanitized field triple (Body, ContentLength,
+	// TransferEncoding)
+	if t.shouldSendContentLength() {
+		// Only set content-length header is it is not already present, allowing
+		// users to set their own content-length header
+		cl := hdrs.Get("Content-Length")
+		switch cl {
+		case "":
+			hdrs.Add("Content-Length", strconv.FormatInt(t.ContentLength, 10))
+		case ContentLengthEmpty:
+			hdrs.Del("Content-Length")
+			hdrs.Add("Content-Length", "")
+		case ContentLengthDelete:
+			hdrs.Del("Content-Length")
+		}
+		if trace != nil && trace.WroteHeaderField != nil {
+			trace.WroteHeaderField("Content-Length", []string{strconv.FormatInt(t.ContentLength, 10)})
+		}
+	} else if chunked(t.TransferEncoding) {
+		if hdrs.Get("Transfer-Encoding") == "" {
+			hdrs.Add("Transfer-Encoding", "chunked")
+		}
+		if trace != nil && trace.WroteHeaderField != nil {
+			trace.WroteHeaderField("Transfer-Encoding", []string{"chunked"})
+		}
+	}
+
+	// Write Trailer header
+	if t.Trailer != nil {
+		keys := make([]string, 0, len(t.Trailer))
+		for k := range t.Trailer {
+			k = CanonicalHeaderKey(k)
+			switch k {
+			case "Transfer-Encoding", "Trailer", "Content-Length":
+				return badStringError("invalid Trailer Key", k)
+			}
+			keys = append(keys, k)
+		}
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			// TODO: could do better allocation-wise here, but trailers are rare,
+			// so being lazy for now.
+			hdrs.Add("Trailer", strings.Join(keys, ","))
+			if trace != nil && trace.WroteHeaderField != nil {
+				trace.WroteHeaderField("Trailer", keys)
+			}
+		}
+	}
+
+	return nil
+}
+
 func (t *transferWriter) writeHeader(w io.Writer, trace *httptrace.ClientTrace) error {
 	if t.Close && !hasToken(t.Header.get("Connection"), "close") {
 		if _, err := io.WriteString(w, "Connection: close\r\n"); err != nil {
@@ -281,7 +348,7 @@ func (t *transferWriter) writeHeader(w io.Writer, trace *httptrace.ClientTrace) 
 		}
 	}
 
-	// Write Content-Length and/or Transfer-Encoding whose values are a
+	// Write Content-Length and/or Transfer-Encoding whose Values are a
 	// function of the sanitized field triple (Body, ContentLength,
 	// TransferEncoding)
 	if t.shouldSendContentLength() {
@@ -310,7 +377,7 @@ func (t *transferWriter) writeHeader(w io.Writer, trace *httptrace.ClientTrace) 
 			k = CanonicalHeaderKey(k)
 			switch k {
 			case "Transfer-Encoding", "Trailer", "Content-Length":
-				return badStringError("invalid Trailer key", k)
+				return badStringError("invalid Trailer Key", k)
 			}
 			keys = append(keys, k)
 		}
@@ -787,7 +854,7 @@ func fixTrailer(header Header, chunked bool) (Header, error) {
 			switch key {
 			case "Transfer-Encoding", "Trailer", "Content-Length":
 				if err == nil {
-					err = badStringError("bad trailer key", key)
+					err = badStringError("bad trailer Key", key)
 					return
 				}
 			}

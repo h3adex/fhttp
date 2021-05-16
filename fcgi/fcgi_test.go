@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	http "github.com/zMrKrabz/fhttp"
+	http "github.com/h3adex/fhttp"
 )
 
 var sizeTests = []struct {

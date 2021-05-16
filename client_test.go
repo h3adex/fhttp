@@ -9,7 +9,6 @@ package http_test
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -25,9 +24,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/zMrKrabz/fhttp"
-	"github.com/zMrKrabz/fhttp/cookiejar"
-	"github.com/zMrKrabz/fhttp/httptest"
+	tls "github.com/h3adex/utls"
+
+	"github.com/h3adex/fhttp/cookiejar"
+	"github.com/h3adex/fhttp/httptest"
 )
 
 var robotsTxtHandler = HandlerFunc(func(w ResponseWriter, r *Request) {
@@ -136,7 +136,7 @@ func TestPostRequestFormat(t *testing.T) {
 	client := &Client{Transport: tr}
 
 	url := "http://dummy.faketld/"
-	json := `{"key":"value"}`
+	json := `{"Key":"value"}`
 	b := strings.NewReader(json)
 	client.Post(url, "application/json", b) // Note: doesn't hit network
 

@@ -81,7 +81,7 @@ var writeSetCookiesTests = []struct {
 		&Cookie{Name: "cookie-15", Value: "samesite-none", SameSite: SameSiteNoneMode},
 		"cookie-15=samesite-none; SameSite=None",
 	},
-	// The "special" cookies have values containing commas or spaces which
+	// The "special" cookies have Values containing commas or spaces which
 	// are disallowed by RFC 6265 but are common in the wild.
 	{
 		&Cookie{Name: "special-1", Value: "a z"},
@@ -319,7 +319,7 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	// Make sure we can properly read back the Set-Cookie headers we create
-	// for values containing spaces or commas:
+	// for Values containing spaces or commas:
 	{
 		Header{"Set-Cookie": {`special-1=a z`}},
 		[]*Cookie{{Name: "special-1", Value: "a z", Raw: `special-1=a z`}},
@@ -352,6 +352,18 @@ var readSetCookiesTests = []struct {
 		Header{"Set-Cookie": {`special-8=","`}},
 		[]*Cookie{{Name: "special-8", Value: ",", Raw: `special-8=","`}},
 	},
+	{
+		Header{"Set-Cookie": {`auth={"access_token":"token1","token_type":"bearer","expires_in":604799,"scope":"store","role":"PUBLIC","roles":["PUBLIC"]}; path=/; SameSite=Strict; HttpOnly; Secure`}},
+		[]*Cookie{{
+			Name: "auth",
+			Value: `{"access_token":"token1","token_type":"bearer","expires_in":604799,"scope":"store","role":"PUBLIC","roles":["PUBLIC"]}`,
+			Path: "/",
+			SameSite: SameSiteStrictMode,
+			HttpOnly: true,
+			Secure: true,
+			Raw: `auth={"access_token":"token1","token_type":"bearer","expires_in":604799,"scope":"store","role":"PUBLIC","roles":["PUBLIC"]}; path=/; SameSite=Strict; HttpOnly; Secure`,
+		}},
+	},
 
 	// TODO(bradfitz): users have reported seeing this in the
 	// wild, but do browsers handle it? RFC 6265 just says "don't
@@ -370,10 +382,10 @@ func toJSON(v interface{}) string {
 
 func TestReadSetCookies(t *testing.T) {
 	for i, tt := range readSetCookiesTests {
-		for n := 0; n < 2; n++ { // to verify readSetCookies doesn't mutate its input
-			c := readSetCookies(tt.Header)
+		for n := 0; n < 2; n++ { // to verify ReadSetCookies doesn't mutate its input
+			c := ReadSetCookies(tt.Header)
 			if !reflect.DeepEqual(c, tt.Cookies) {
-				t.Errorf("#%d readSetCookies: have\n%s\nwant\n%s\n", i, toJSON(c), toJSON(tt.Cookies))
+				t.Errorf("#%d ReadSetCookies: have\n%s\nwant\n%s\n", i, toJSON(c), toJSON(tt.Cookies))
 				continue
 			}
 		}
@@ -440,10 +452,10 @@ var readCookiesTests = []struct {
 
 func TestReadCookies(t *testing.T) {
 	for i, tt := range readCookiesTests {
-		for n := 0; n < 2; n++ { // to verify readCookies doesn't mutate its input
-			c := readCookies(tt.Header, tt.Filter)
+		for n := 0; n < 2; n++ { // to verify ReadCookies doesn't mutate its input
+			c := ReadCookies(tt.Header, tt.Filter)
 			if !reflect.DeepEqual(c, tt.Cookies) {
-				t.Errorf("#%d readCookies:\nhave: %s\nwant: %s\n", i, toJSON(c), toJSON(tt.Cookies))
+				t.Errorf("#%d ReadCookies:\nhave: %s\nwant: %s\n", i, toJSON(c), toJSON(tt.Cookies))
 				continue
 			}
 		}
@@ -582,10 +594,10 @@ func BenchmarkReadSetCookies(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c = readSetCookies(header)
+		c = ReadSetCookies(header)
 	}
 	if !reflect.DeepEqual(c, wantCookies) {
-		b.Fatalf("readSetCookies:\nhave: %s\nwant: %s\n", toJSON(c), toJSON(wantCookies))
+		b.Fatalf("ReadSetCookies:\nhave: %s\nwant: %s\n", toJSON(c), toJSON(wantCookies))
 	}
 }
 
@@ -611,9 +623,20 @@ func BenchmarkReadCookies(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c = readCookies(header, "")
+		c = ReadCookies(header, "")
 	}
 	if !reflect.DeepEqual(c, wantCookies) {
-		b.Fatalf("readCookies:\nhave: %s\nwant: %s\n", toJSON(c), toJSON(wantCookies))
+		b.Fatalf("ReadCookies:\nhave: %s\nwant: %s\n", toJSON(c), toJSON(wantCookies))
+	}
+}
+
+func TestParseCookieStr(t *testing.T) {
+	cookieStr := "name=value; Max-Age=31536000; Domain=.google.com; Path=/; Secure; SameSite=Lax"
+	h := Header{
+		"Set-Cookie": {cookieStr},
+	}
+	cookies := ReadSetCookies(h)
+	if len(cookies) != 1 {
+		t.Fatalf("got %d cookies, only want 1", len(cookies))
 	}
 }
